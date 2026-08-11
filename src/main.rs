@@ -172,7 +172,7 @@ impl Application for MapApp {
         None
     }
 
-    fn display_list(&mut self, size: LogicalSize, _scale: f64) -> Option<DisplayList> {
+    fn display_list(&mut self, size: LogicalSize, scale: f64) -> Option<DisplayList> {
         self.win = (size.width, size.height);
         self.tiles.begin_frame();
         let mut pc = PaintCtx::new();
@@ -183,7 +183,18 @@ impl Application for MapApp {
         );
 
         let scale_px = world_px(self.zoom);
-        let tz = (self.zoom.round() as i32).clamp(0, MAX_ZOOM as i32) as u8;
+        // Pick the tile zoom for physical resolution: on a scale-2 output a
+        // z+1 tile drawn at 128 logical px is 1:1 physical. Backed off when
+        // the viewport would need more resident tiles than the GPU image
+        // registry (256, shared) comfortably holds.
+        let mut tz = ((self.zoom + scale.max(1.0).log2()).round() as i32).clamp(0, MAX_ZOOM as i32) as u8;
+        while tz > 0 {
+            let tile_px = scale_px / (1u64 << tz) as f64;
+            if (w / tile_px + 2.0) * (h / tile_px + 2.0) <= 160.0 {
+                break;
+            }
+            tz -= 1;
+        }
         let n = 1u64 << tz;
         let tile_px = scale_px / n as f64;
         // World coord of the window's top-left corner.
