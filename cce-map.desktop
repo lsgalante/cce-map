@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=Map
+Comment=OpenStreetMap tile viewer
+Exec=cce-map
+Icon=cce-map
+Categories=Utility;Maps;
+Terminal=false
+StartupNotify=true
+StartupWMClass=cce-map
