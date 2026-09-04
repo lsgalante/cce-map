@@ -12,6 +12,7 @@ use wayland_client::QueueHandle;
 use cce_ui::engine::{Application, EngineState, LogicalPosition, LogicalSize, WindowSettings};
 use cce_ui::scene::layout::Rect;
 use cce_ui::scene::paint::{DisplayList, PaintCtx};
+use cce_ui::widget::scroll_motion::{current_scroll_phase, scroll_settings, ScrollPhase};
 use cce_ui::widget::{ElementState, Key, KeyEvent, MouseButton, MouseScrollDelta, NamedKey};
 
 use tiles::{TileKey, TileManager, MAX_ZOOM, TILE_SIZE};
@@ -29,6 +30,13 @@ struct MapApp {
     /// World coords of the window center, u east [0,1), v south [0,1].
     center: (f64, f64),
     zoom: f64,
+    /// Where the wheel is taking the zoom: each notch moves this and `tick`
+    /// eases `zoom` toward it around `zoom_anchor` at cce-ui's wheel-glide
+    /// rate (`scroll_ease`; instant with `smooth_scroll false`), so a burst
+    /// of notches is one glide rather than a staircase. A trackpad, pinch,
+    /// keys and Home set the zoom directly and pull the target along.
+    zoom_target: f64,
+    zoom_anchor: (f64, f64),
     win: (f32, f32),
     pointer: (f64, f64),
     drag: Option<(f64, f64)>,
@@ -40,7 +48,8 @@ fn world_px(zoom: f64) -> f64 {
 }
 
 impl MapApp {
-    fn zoom_by(&mut self, dz: f64, px: f64, py: f64) {
+    /// Change the zoom by `dz` keeping the world point under (px, py) fixed.
+    fn zoom_step(&mut self, dz: f64, px: f64, py: f64) {
         let old = world_px(self.zoom);
         let new_zoom = (self.zoom + dz).clamp(0.0, MAX_ZOOM as f64);
         let new = world_px(new_zoom);
@@ -50,6 +59,41 @@ impl MapApp {
         self.center.0 = (u - (px - w / 2.0) / new).rem_euclid(1.0);
         self.center.1 = (v - (py - h / 2.0) / new).clamp(0.0, 1.0);
         self.zoom = new_zoom;
+    }
+
+    /// A direct zoom change (pinch, keys, trackpad): lands at once and
+    /// cancels any wheel glide in flight.
+    fn zoom_by(&mut self, dz: f64, px: f64, py: f64) {
+        self.zoom_step(dz, px, py);
+        self.zoom_target = self.zoom;
+    }
+
+    /// A wheel notch: retarget the glide around the pointer.
+    fn zoom_wheel(&mut self, dz: f64, px: f64, py: f64) {
+        self.zoom_anchor = (px, py);
+        self.zoom_target = (self.zoom_target + dz).clamp(0.0, MAX_ZOOM as f64);
+        if !scroll_settings().smooth {
+            let remaining = self.zoom_target - self.zoom;
+            self.zoom_step(remaining, px, py);
+        }
+    }
+
+    /// Ease the zoom toward its wheel target; true while it moved.
+    fn tick_zoom(&mut self, dt: f32) -> bool {
+        let remaining = self.zoom_target - self.zoom;
+        if remaining == 0.0 {
+            return false;
+        }
+        let (ax, ay) = self.zoom_anchor;
+        // Frame-rate independent exponential approach (cce-ui's glide),
+        // snapping the last sliver so it settles instead of trailing off.
+        let step = if remaining.abs() < 1e-3 {
+            remaining
+        } else {
+            remaining * (1.0 - (-(scroll_settings().ease_rate as f64) * dt as f64).exp())
+        };
+        self.zoom_step(step, ax, ay);
+        true
     }
 
     fn pan_px(&mut self, dx: f64, dy: f64) {
@@ -73,6 +117,8 @@ impl Application for MapApp {
             tiles: TileManager::new(sender),
             center: (0.5, 0.5),
             zoom: 2.0,
+            zoom_target: 2.0,
+            zoom_anchor: (500.0, 350.0),
             win: (1000.0, 700.0),
             pointer: (0.0, 0.0),
             drag: None,
@@ -99,7 +145,11 @@ impl Application for MapApp {
         }
     }
 
-    fn tick(&mut self, _dt: f32, _needs_rebuild: &mut bool) {}
+    fn tick(&mut self, dt: f32, needs_rebuild: &mut bool) {
+        if self.tick_zoom(dt) {
+            *needs_rebuild = true;
+        }
+    }
 
     fn handle_resize(&mut self, width: f32, height: f32, _scale: f64) {
         self.win = (width, height);
@@ -133,10 +183,21 @@ impl Application for MapApp {
 
     fn handle_mouse_wheel(&mut self, delta: &MouseScrollDelta, pos: LogicalPosition, needs_rebuild: &mut bool) {
         let notches = delta.notches_y() as f64;
-        if notches != 0.0 {
-            self.zoom_by(notches * WHEEL_ZOOM_STEP, pos.x as f64, pos.y as f64);
-            *needs_rebuild = true;
+        if notches == 0.0 {
+            return;
         }
+        let dz = notches * WHEEL_ZOOM_STEP;
+        let (px, py) = (pos.x as f64, pos.y as f64);
+        // A finger on a trackpad is followed 1:1 (nothing is smoother than
+        // the hand); discrete notches glide.
+        let finger = matches!(delta, MouseScrollDelta::PixelDelta(_))
+            && matches!(current_scroll_phase(), ScrollPhase::Finger | ScrollPhase::FingerEnd);
+        if finger {
+            self.zoom_by(dz, px, py);
+        } else {
+            self.zoom_wheel(dz, px, py);
+        }
+        *needs_rebuild = true;
     }
 
     fn handle_pinch(&mut self, factor: f32, pos: LogicalPosition, needs_rebuild: &mut bool) -> bool {
@@ -163,6 +224,7 @@ impl Application for MapApp {
             Key::Named(NamedKey::Home) => {
                 self.center = (0.5, 0.5);
                 self.zoom = 2.0;
+                self.zoom_target = 2.0;
             }
             _ => handled = false,
         }
