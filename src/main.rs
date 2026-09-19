@@ -22,11 +22,15 @@ const KEY_PAN_PX: f64 = 120.0;
 
 #[derive(Debug, Clone)]
 enum Message {
-    Tile { key: TileKey, image: Option<u32> },
+    Tile { generation: u64, key: TileKey, image: Option<u32> },
 }
 
 struct MapApp {
     tiles: TileManager,
+    /// Whether a renderer has been handed over yet — the first one is the
+    /// process's own, any later one is a replacement after a reconnect. See
+    /// `renderer_init`.
+    seen_renderer: bool,
     /// World coords of the window center, u east [0,1), v south [0,1].
     center: (f64, f64),
     zoom: f64,
@@ -115,6 +119,7 @@ impl Application for MapApp {
     fn new(_qh: &QueueHandle<EngineState<Self>>, sender: calloop::channel::Sender<Self::Message>) -> Self {
         Self {
             tiles: TileManager::new(sender),
+            seen_renderer: false,
             center: (0.5, 0.5),
             zoom: 2.0,
             zoom_target: 2.0,
@@ -138,10 +143,27 @@ impl Application for MapApp {
 
     fn update(&mut self, msg: Self::Message, needs_rebuild: &mut bool, _exit: &mut bool) {
         match msg {
-            Message::Tile { key, image } => {
-                self.tiles.complete(key, image);
+            Message::Tile { generation, key, image } => {
+                self.tiles.complete(generation, key, image);
                 *needs_rebuild = true;
             }
+        }
+    }
+
+    /// Re-fetch the visible tiles when the renderer is replaced.
+    ///
+    /// The tile store caches **renderer** image ids, which do not survive the
+    /// reconnect `window_runner` performs around a live `Application` — see
+    /// [`TileManager::reset`] for the whole story. Every resident tile is
+    /// dropped here and the next paint asks for what it needs again, off the
+    /// disk cache.
+    ///
+    /// Not on the first renderer: the tiles queued from `new()` are waiting
+    /// for exactly that one.
+    fn renderer_init(&mut self, _renderer: &mut cce_ui::vk::VkRenderer) {
+        if std::mem::replace(&mut self.seen_renderer, true) {
+            log::info!("[map] renderer replaced; re-fetching the resident tiles");
+            self.tiles.reset();
         }
     }
 

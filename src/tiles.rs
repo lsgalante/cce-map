@@ -39,14 +39,18 @@ enum TileState {
 
 pub struct TileManager {
     states: HashMap<TileKey, TileState>,
-    queue: mpsc::Sender<TileKey>,
+    queue: mpsc::Sender<(u64, TileKey)>,
     /// Frame counter used as the LRU clock; bumped by the app each rebuild.
     frame: u64,
+    /// Bumped by [`TileManager::reset`]. A fetch carries the generation it
+    /// was queued under, so a tile uploaded to a renderer that has since been
+    /// replaced is freed on arrival instead of drawn as a dead id.
+    generation: u64,
 }
 
 impl TileManager {
     pub fn new(notify: calloop::channel::Sender<Message>) -> Self {
-        let (queue, rx) = mpsc::channel::<TileKey>();
+        let (queue, rx) = mpsc::channel::<(u64, TileKey)>();
         let rx = Arc::new(Mutex::new(rx));
         let url_template = std::env::var("CCE_MAP_TILE_URL").unwrap_or_else(|_| DEFAULT_TILE_URL.to_string());
         let cache_root = cache_root();
@@ -57,7 +61,7 @@ impl TileManager {
             let cache_root = cache_root.clone();
             std::thread::spawn(move || worker(rx, notify, url_template, cache_root));
         }
-        Self { states: HashMap::new(), queue, frame: 0 }
+        Self { states: HashMap::new(), queue, frame: 0, generation: 0 }
     }
 
     pub fn begin_frame(&mut self) {
@@ -75,7 +79,7 @@ impl TileManager {
             Some(_) => None,
             None => {
                 self.states.insert(key, TileState::Pending);
-                let _ = self.queue.send(key);
+                let _ = self.queue.send((self.generation, key));
                 None
             }
         }
@@ -92,13 +96,47 @@ impl TileManager {
         }
     }
 
-    pub fn complete(&mut self, key: TileKey, image: Option<u32>) {
+    pub fn complete(&mut self, generation: u64, key: TileKey, image: Option<u32>) {
+        if generation != self.generation {
+            // Uploaded to a renderer that is gone (see `reset`): the id names
+            // nothing, so free it rather than cache it as a tile that would
+            // draw blank for as long as it stayed resident.
+            if let Some(image) = image {
+                cce_ui::vk::free_image(image);
+            }
+            return;
+        }
         let state = match image {
             Some(image) => TileState::Ready { image, last_used: self.frame },
             None => TileState::Failed,
         };
         self.states.insert(key, state);
         self.evict();
+    }
+
+    /// Throw every resident tile away and re-fetch on demand.
+    ///
+    /// For one caller: the renderer has been replaced. GPU tile ids belong to
+    /// a **renderer**, and a renderer does not outlive its session —
+    /// `cce-ui`'s `window_runner` repairs a lost Wayland transport by opening
+    /// a new session around the same `Application`, which rebuilds the
+    /// renderer and with it the image table. A draw for an unknown id is
+    /// skipped rather than reported, so a reconnected map came back as bare
+    /// background with its markers and scale bar floating on it, and stayed
+    /// that way: a resident tile is never re-fetched.
+    ///
+    /// Re-fetching is cheap — every tile that was resident is already on disk
+    /// under `~/.cache/cce/map/tiles`, so this is a decode and an upload, not
+    /// a network round trip. `Failed` entries go too, which is the one
+    /// behavior change: a tile that failed before the reconnect gets one more
+    /// try.
+    pub fn reset(&mut self) {
+        for (_, state) in self.states.drain() {
+            if let TileState::Ready { image, .. } = state {
+                cce_ui::vk::free_image(image);
+            }
+        }
+        self.generation += 1;
     }
 
     /// Free the least-recently-used GPU tiles once over budget. Tiles
@@ -135,7 +173,7 @@ fn cache_root() -> PathBuf {
 }
 
 fn worker(
-    rx: Arc<Mutex<mpsc::Receiver<TileKey>>>,
+    rx: Arc<Mutex<mpsc::Receiver<(u64, TileKey)>>>,
     notify: calloop::channel::Sender<Message>,
     url_template: String,
     cache_root: PathBuf,
@@ -146,14 +184,14 @@ fn worker(
         .build()
         .expect("http client");
     loop {
-        let key = match rx.lock().unwrap().recv() {
+        let (generation, key) = match rx.lock().unwrap().recv() {
             Ok(k) => k,
             Err(_) => return,
         };
         let image = fetch_tile(&client, &url_template, &cache_root, key)
             .map_err(|e| log::warn!("tile {}/{}/{}: {e}", key.z, key.x, key.y))
             .ok();
-        if notify.send(Message::Tile { key, image }).is_err() {
+        if notify.send(Message::Tile { generation, key, image }).is_err() {
             return;
         }
     }
