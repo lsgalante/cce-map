@@ -339,24 +339,28 @@ impl Application for MapApp {
         }
 
         // HUD: zoom + center coordinates (top-left), attribution (bottom-right).
+        // Both stand the root plate's inset off the window edge — the one
+        // number the ladder gives for that — with the control text inset
+        // inside their boxes.
+        let inset = cce_ui::layout::root_plate_inset();
+        let text_in = cce_ui::layout::CONTROL_TEXT_INSET;
+        let hud_h = 24.0f32;
         let (lat, lon) = self.center_lat_lon();
-        pc.quad(Rect { x: 8.0, y: 8.0, width: 232.0, height: 24.0 }, [0.0, 0.0, 0.0, 0.45]);
+        pc.quad(Rect { x: inset, y: inset, width: 232.0, height: hud_h }, [0.0, 0.0, 0.0, 0.45]);
         pc.text(
             format!("z {:.2}   {:.4}°, {:.4}°", self.zoom, lat, lon),
-            16.0,
-            13.0,
+            inset + text_in,
+            inset + 5.0,
             12.0,
             [230, 230, 230],
         );
         let attr_w = 200.0f32;
-        pc.quad(
-            Rect { x: size.width - attr_w, y: size.height - 24.0, width: attr_w, height: 24.0 },
-            [0.0, 0.0, 0.0, 0.45],
-        );
+        let (ax, ay) = (size.width - inset - attr_w, size.height - inset - hud_h);
+        pc.quad(Rect { x: ax, y: ay, width: attr_w, height: hud_h }, [0.0, 0.0, 0.0, 0.45]);
         pc.text(
             "© OpenStreetMap contributors",
-            size.width - attr_w + 8.0,
-            size.height - 19.0,
+            ax + text_in,
+            ay + 5.0,
             11.0,
             [200, 200, 200],
         );
