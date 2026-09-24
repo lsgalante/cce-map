@@ -261,10 +261,9 @@ impl Application for MapApp {
         self.tiles.begin_frame();
         let mut pc = PaintCtx::new();
         let (w, h) = (size.width as f64, size.height as f64);
-        pc.quad(
-            Rect { x: 0.0, y: 0.0, width: size.width, height: size.height },
-            [0.07, 0.08, 0.09, 1.0],
-        );
+        // The standard root plate (cce-ui PlateSpec::window); the tiles are
+        // full-bleed content drawn on it, so it shows only where they do not.
+        pc.root_plate(size.width, size.height);
 
         let scale_px = world_px(self.zoom);
         // Pick the tile zoom for physical resolution: on a scale-2 output a
