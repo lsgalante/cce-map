@@ -7,9 +7,8 @@
 
 mod tiles;
 
-use wayland_client::QueueHandle;
 
-use cce_ui::engine::{Application, EngineState, LogicalPosition, LogicalSize, WindowSettings};
+use cce_ui::engine::{Application, LogicalPosition, LogicalSize, WindowSettings};
 use cce_ui::scene::layout::Rect;
 use cce_ui::scene::paint::{DisplayList, PaintCtx};
 use cce_ui::widget::scroll_motion::{current_scroll_phase, scroll_settings, ScrollPhase};
@@ -116,7 +115,9 @@ impl MapApp {
 impl Application for MapApp {
     type Message = Message;
 
-    fn new(_qh: &QueueHandle<EngineState<Self>>, sender: calloop::channel::Sender<Self::Message>) -> Self {
+    fn create(sender: cce_ui::engine::AppSender<Self::Message>) -> Self {
+        // The app keeps calloop's sender; `AppSender` converts into it.
+        let sender: calloop::channel::Sender<Self::Message> = sender.into();
         Self {
             tiles: TileManager::new(sender),
             seen_renderer: false,
