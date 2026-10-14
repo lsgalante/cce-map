@@ -6,7 +6,7 @@
 //! wakes and repaints.
 
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
 
@@ -200,7 +200,7 @@ fn worker(
 fn fetch_tile(
     client: &reqwest::blocking::Client,
     url_template: &str,
-    cache_root: &PathBuf,
+    cache_root: &Path,
     key: TileKey,
 ) -> Result<u32, String> {
     let path = cache_root.join(key.z.to_string()).join(key.x.to_string()).join(format!("{}.png", key.y));
