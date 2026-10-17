@@ -3,9 +3,11 @@
 //! View state is a Web-Mercator world coordinate (u, v) ∈ [0,1]² at the
 //! window center plus a continuous zoom. Tiles render at the nearest
 //! integer zoom, scaled to the continuous zoom; while a tile loads, the
-//! nearest resident ancestor is drawn clipped to the tile's rect.
+//! nearest resident ancestor is drawn clipped to the tile's rect. A launch
+//! opens on the view it closed on (`ui_state`).
 
 mod tiles;
+mod ui_state;
 
 
 use cce_ui::engine::{Application, LogicalPosition, LogicalSize, WindowSettings};
@@ -118,12 +120,14 @@ impl Application for MapApp {
     fn create(sender: cce_ui::engine::AppSender<Self::Message>) -> Self {
         // The app keeps calloop's sender; `AppSender` converts into it.
         let sender: calloop::channel::Sender<Self::Message> = sender.into();
+        // Back where it was when it closed (`ui_state`).
+        let (center, zoom) = ui_state::initial(MAX_ZOOM as f64).unwrap_or(((0.5, 0.5), 2.0));
         Self {
             tiles: TileManager::new(sender),
             seen_renderer: false,
-            center: (0.5, 0.5),
-            zoom: 2.0,
-            zoom_target: 2.0,
+            center,
+            zoom,
+            zoom_target: zoom,
             zoom_anchor: (500.0, 350.0),
             win: (1000.0, 700.0),
             pointer: (0.0, 0.0),
@@ -375,6 +379,10 @@ impl Application for MapApp {
 
     fn clear_color(&self) -> [f32; 4] {
         [0.07, 0.08, 0.09, 1.0]
+    }
+
+    fn on_exit(&mut self) {
+        ui_state::save(self.center, self.zoom);
     }
 }
 
